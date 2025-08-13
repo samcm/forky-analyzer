@@ -73,9 +73,14 @@ def create_execution_camp_sankey(analysis: Dict) -> go.Figure:
     # Add forks with weight info (already sorted by weight)
     forks = []
     fork_positions = []  # Track y positions for proper ordering
-    for i, (block_root, nodes) in enumerate(analysis["fork_groups"].items()):
-        fork_name = f"Fork {i + 1}"
-        weight = analysis["fork_weights"].get(block_root, 0)
+    for i, (fork_key, nodes) in enumerate(analysis["fork_groups"].items()):
+        # Extract fork number from key (e.g., "fork_1" -> "Fork 1")
+        if fork_key.startswith("fork_"):
+            fork_num = fork_key.split("_")[1]
+            fork_name = f"Fork {fork_num}"
+        else:
+            fork_name = f"Fork {i + 1}"
+        weight = analysis["fork_weights"].get(fork_key, 0)
         # Format weight for display
         weight_str = format_weight(weight)
         labels.append(f"{fork_name}\n(w: {weight_str})")
@@ -95,9 +100,14 @@ def create_execution_camp_sankey(analysis: Dict) -> go.Figure:
     # Count flows - use weight instead of node count
     el_to_fork_weights = defaultdict(lambda: defaultdict(int))
     
-    for fork_idx, (block_root, nodes) in enumerate(analysis["fork_groups"].items()):
-        fork_name = f"Fork {fork_idx + 1}"
-        fork_weight = analysis["fork_weights"].get(block_root, 0)
+    for fork_idx, (fork_key, nodes) in enumerate(analysis["fork_groups"].items()):
+        # Extract fork number from key
+        if fork_key.startswith("fork_"):
+            fork_num = fork_key.split("_")[1]
+            fork_name = f"Fork {fork_num}"
+        else:
+            fork_name = f"Fork {fork_idx + 1}"
+        fork_weight = analysis["fork_weights"].get(fork_key, 0)
         
         # Count nodes per EL in this fork
         el_counts = defaultdict(int)
@@ -286,8 +296,13 @@ def create_sankey_diagram(analysis: Dict, consensus_client: Optional[str] = None
     # Count execution -> fork combinations
     execution_fork_counts = defaultdict(lambda: defaultdict(int))
     
-    for fork_idx, (block_root, nodes) in enumerate(filtered_fork_groups.items()):
-        fork_name = f"Fork {fork_idx + 1}"
+    for fork_idx, (fork_key, nodes) in enumerate(filtered_fork_groups.items()):
+        # Extract fork number from key
+        if fork_key.startswith("fork_"):
+            fork_num = fork_key.split("_")[1]
+            fork_name = f"Fork {fork_num}"
+        else:
+            fork_name = f"Fork {fork_idx + 1}"
         for node in nodes:
             ec = node.get("execution_client", "unknown")
             execution_fork_counts[ec][fork_name] += 1
@@ -359,9 +374,14 @@ def create_fork_composition_treemap(analysis: Dict) -> go.Figure:
     hover_text.append(f"Total: {analysis['total_nodes']} nodes across {analysis['num_forks']} forks")
     
     # Add each fork and its CL/EL pairs
-    for i, (block_root, nodes) in enumerate(analysis["fork_groups"].items()):
-        fork_name = f"Fork {i+1}"
-        block_info = analysis["block_info"].get(block_root, {})
+    for i, (fork_key, nodes) in enumerate(analysis["fork_groups"].items()):
+        # Extract fork number from key
+        if fork_key.startswith("fork_"):
+            fork_num = fork_key.split("_")[1]
+            fork_name = f"Fork {fork_num}"
+        else:
+            fork_name = f"Fork {i+1}"
+        block_info = analysis["block_info"].get(fork_key, {})
         
         # Add fork
         labels.append(fork_name)
@@ -369,11 +389,11 @@ def create_fork_composition_treemap(analysis: Dict) -> go.Figure:
         values.append(0)  # Will be sum of children
         colors.append("#34495E")
         hover_text.append(
-            f"Fork {i+1}\n"
+            f"{fork_name}\n"
             f"Slot: {block_info.get('slot', 'unknown')}\n"
             f"Nodes: {len(nodes)}\n"
-            f"Weight: {format_weight(analysis['fork_weights'].get(block_root, 0))}\n"
-            f"Block: {block_root[:16]}..."
+            f"Weight: {format_weight(analysis['fork_weights'].get(fork_key, 0))}\n"
+            f"Block: {block_info.get('root', 'unknown')[:16]}..."
         )
         
         # Group by CL/EL pairs
@@ -499,9 +519,14 @@ def create_comprehensive_fork_flow(analysis: Dict) -> tuple[go.Figure, List[Dict
     cl_el_fork_counts = defaultdict(lambda: defaultdict(int))
     cl_el_fork_nodes = defaultdict(lambda: defaultdict(list))  # Track actual node names
     
-    for fork_idx, (block_root, nodes) in enumerate(analysis["fork_groups"].items()):
-        fork_name = f"Fork {fork_idx + 1}"
-        fork_weight = analysis["fork_weights"].get(block_root, 0)
+    for fork_idx, (fork_key, nodes) in enumerate(analysis["fork_groups"].items()):
+        # Extract fork number from key
+        if fork_key.startswith("fork_"):
+            fork_num = fork_key.split("_")[1]
+            fork_name = f"Fork {fork_num}"
+        else:
+            fork_name = f"Fork {fork_idx + 1}"
+        fork_weight = analysis["fork_weights"].get(fork_key, 0)
         
         for node in nodes:
             cl = node.get("consensus_client", "unknown")
@@ -544,11 +569,11 @@ def create_comprehensive_fork_flow(analysis: Dict) -> tuple[go.Figure, List[Dict
             # This CL/EL pair is split - record it with node details
             fork_details = {}
             for fork_name in fork_counts:
-                # Get fork index to look up block info
-                fork_idx = int(fork_name.split()[1]) - 1
-                block_root = list(analysis["fork_groups"].keys())[fork_idx]
-                block_info = analysis.get("block_info", {}).get(block_root, {})
-                weight = analysis.get("fork_weights", {}).get(block_root, 0)
+                # Get fork key to look up block info
+                fork_num = fork_name.split()[1]
+                fork_key = f"fork_{fork_num}"
+                block_info = analysis.get("block_info", {}).get(fork_key, {})
+                weight = analysis.get("fork_weights", {}).get(fork_key, 0)
                 
                 fork_details[fork_name] = {
                     "count": fork_counts[fork_name],
@@ -622,47 +647,69 @@ def create_comprehensive_fork_flow(analysis: Dict) -> tuple[go.Figure, List[Dict
     return fig, split_instances
 
 
+def create_node_fork_table(analysis: Dict):
+    """Create a dataframe and styling for showing each node and what fork they're on."""
+    import pandas as pd
+    
+    # Define fork colors
+    fork_colors = {
+        "Fork 1": "#2ECC71",  # Green for Fork 1 (usually majority)
+        "Fork 2": "#E74C3C",  # Red for Fork 2
+        "Fork 3": "#F39C12",  # Orange for Fork 3
+        "Fork 4": "#3498DB",  # Blue for Fork 4
+        "Fork 5": "#9B59B6",  # Purple for Fork 5
+        "Fork 6": "#1ABC9C",  # Turquoise for Fork 6
+    }
+    
+    # Build table data
+    table_data = []
+    
+    for fork_idx, (fork_key, nodes) in enumerate(analysis["fork_groups"].items()):
+        # Get fork info
+        fork_num = int(fork_key.split("_")[1]) if fork_key.startswith("fork_") else fork_idx + 1
+        fork_info = analysis["block_info"].get(fork_key, {})
+        fork_slot = fork_info.get("slot", "unknown")
+        fork_weight = analysis["fork_weights"].get(fork_key, 0)
+        fork_name = f"Fork {fork_num}"
+        
+        # Add each node in this fork
+        for node in sorted(nodes, key=lambda x: x.get("node", "")):
+            node_name = node.get("node", "unknown")
+            cl = node.get("consensus_client", "unknown")
+            el = node.get("execution_client", "unknown")
+            weight = node.get("weight", 0)
+            
+            table_data.append({
+                "Node": node_name,
+                "Consensus Client": cl,
+                "Execution Client": el,
+                "Fork": fork_name,
+                "Slot": fork_slot,
+                "Weight": format_weight(weight),
+            })
+    
+    # Create DataFrame
+    df = pd.DataFrame(table_data)
+    
+    # Create a style function for the dataframe
+    def style_fork_rows(row):
+        fork = row['Fork']
+        color = fork_colors.get(fork, "#34495E")
+        return [f'background-color: {color}20'] * len(row)
+    
+    return df, fork_colors
+
+
 def create_fork_tree_sankey(analysis: Dict, frames: List[Dict]) -> go.Figure:
     """Create a Sankey diagram showing fork divergence from common ancestors."""
     
-    # Find common ancestor blocks by analyzing fork choice data
+    # Get fork groups
     fork_heads = analysis["fork_groups"]
     
-    # For simplicity, find the most recent split point
-    # This would be the last block that appears in multiple fork choice trees
-    common_blocks = {}
-    
-    for frame in frames:
-        if not frame or not frame.get("data"):
-            continue
-        
-        fc_nodes = frame.get("data", {}).get("fork_choice_nodes", [])
-        for node in fc_nodes:
-            block_root = node.get("block_root")
-            slot = int(node.get("slot", 0))
-            if block_root:
-                if block_root not in common_blocks:
-                    common_blocks[block_root] = {"slot": slot, "count": 0}
-                common_blocks[block_root]["count"] += 1
-    
-    # Find blocks that appear in many nodes (potential common ancestors)
-    threshold = len(frames) * 0.7  # Block should appear in 70% of nodes
-    potential_ancestors = [
-        (root, info) for root, info in common_blocks.items() 
-        if info["count"] >= threshold
-    ]
-    
-    # Sort by slot to find the most recent common ancestor
-    potential_ancestors.sort(key=lambda x: x[1]["slot"], reverse=True)
-    
-    # Find the split point (where forks diverge)
-    recent_split = None
-    split_slot = 0
-    
-    if potential_ancestors:
-        # The most recent widely-shared block
-        recent_split = potential_ancestors[0][0]
-        split_slot = potential_ancestors[0][1]["slot"]
+    # Use the divergence point from our proper tree-based analysis
+    divergence_info = analysis.get("divergence_point")
+    recent_split = divergence_info.get("block") if divergence_info else None
+    split_slot = divergence_info.get("slot") if divergence_info else 0
     
     # Build Sankey diagram
     labels = []
@@ -670,28 +717,35 @@ def create_fork_tree_sankey(analysis: Dict, frames: List[Dict]) -> go.Figure:
     idx = 0
     
     # Add common ancestor if found
-    if recent_split:
+    if recent_split and split_slot > 0:
         labels.append(f"Common Ancestor\nSlot {split_slot}")
-        label_to_idx[recent_split] = idx
+        label_to_idx["ancestor"] = idx  # Use a fixed key instead of block root
         idx += 1
     
     # Add fork heads (simplified labels with just essential info)
     fork_order = []
-    for i, (head_root, nodes) in enumerate(fork_heads.items()):
-        fork_order.append(head_root)
-        head_info = analysis["block_info"][head_root]
+    for i, (fork_key, nodes) in enumerate(fork_heads.items()):
+        # Extract fork number from key
+        if fork_key.startswith("fork_"):
+            fork_num = fork_key.split("_")[1]
+            fork_name = f"Fork {fork_num}"
+        else:
+            fork_name = f"Fork {i+1}"
+        
+        fork_order.append(fork_key)
+        head_info = analysis["block_info"][fork_key]
         head_slot = head_info["slot"]
         node_count = len(nodes)
-        weight = analysis["fork_weights"].get(head_root, 0)
+        weight = analysis["fork_weights"].get(fork_key, 0)
         
         # Simplified label
-        label = f"Fork {i+1}\n"
+        label = f"{fork_name}\n"
         label += f"Slot {head_slot}\n"
         label += f"{node_count} nodes\n"
         label += f"Weight: {format_weight(weight)}"
         
         labels.append(label)
-        label_to_idx[head_root] = idx
+        label_to_idx[fork_key] = idx
         idx += 1
     
     # Build links
@@ -700,17 +754,17 @@ def create_fork_tree_sankey(analysis: Dict, frames: List[Dict]) -> go.Figure:
     value = []
     link_colors = []
     
-    if recent_split and recent_split in label_to_idx:
+    if recent_split and split_slot > 0:
         # Link from common ancestor to each fork head
-        for head_root in fork_heads.keys():
-            if head_root in label_to_idx:
-                source.append(label_to_idx[recent_split])
-                target.append(label_to_idx[head_root])
+        for fork_key in fork_heads.keys():
+            if fork_key in label_to_idx:
+                source.append(label_to_idx["ancestor"])
+                target.append(label_to_idx[fork_key])
                 # Use weight instead of node count
-                value.append(analysis["fork_weights"].get(head_root, 0))
+                value.append(analysis["fork_weights"].get(fork_key, 0))
                 
                 # Color based on fork size
-                if len(fork_heads[head_root]) > len(fork_heads) / 2:
+                if len(fork_heads[fork_key]) > sum(len(nodes) for nodes in fork_heads.values()) / 2:
                     link_colors.append("rgba(46, 204, 113, 0.5)")  # Green for majority
                 else:
                     link_colors.append("rgba(231, 76, 60, 0.5)")  # Red for minority
@@ -729,10 +783,10 @@ def create_fork_tree_sankey(analysis: Dict, frames: List[Dict]) -> go.Figure:
             fork_idx = int(lines[0].split()[1]) - 1  # Extract fork number
             
             if fork_idx < len(fork_order):
-                head_root = fork_order[fork_idx]
-                nodes = fork_heads[head_root]
-                head_info = analysis["block_info"][head_root]
-                weight = analysis["fork_weights"].get(head_root, 0)
+                fork_key = fork_order[fork_idx]
+                nodes = fork_heads[fork_key]
+                head_info = analysis["block_info"][fork_key]
+                weight = analysis["fork_weights"].get(fork_key, 0)
                 
                 # Color based on node count
                 count = len(nodes)
@@ -746,7 +800,7 @@ def create_fork_tree_sankey(analysis: Dict, frames: List[Dict]) -> go.Figure:
                 # Build hover text with all details
                 hover = f"<b>Fork {fork_idx + 1}</b><br>"
                 hover += f"Slot: {head_info['slot']} (+{head_info['slot'] - split_slot if split_slot else 0} since split)<br>"
-                hover += f"Block: {head_root[:16]}...<br>"
+                hover += f"Block: {head_info.get('root', 'unknown')[:16]}...<br>"
                 hover += f"Total: {len(nodes)} nodes<br>"
                 hover += f"Weight: {format_weight(weight)}<br>"
                 hover += "<br><b>CL/EL Breakdown:</b><br>"
@@ -766,9 +820,10 @@ def create_fork_tree_sankey(analysis: Dict, frames: List[Dict]) -> go.Figure:
                 node_colors.append("#95A5A6")
                 hover_texts.append(label.replace('\n', '<br>'))
     
-    if not source:
-        # No common ancestor found - just show the fork heads
-        st.info("No common ancestor found in recent history. Showing fork heads only.")
+    # Only show message if we have multiple forks but no divergence point found
+    if not source and len(fork_heads) > 1:
+        # This shouldn't happen with proper tree analysis, but keeping as safety
+        pass  # Don't show misleading message
     
     fig = go.Figure(data=[go.Sankey(
         node=dict(

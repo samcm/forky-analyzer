@@ -1,15 +1,15 @@
 import streamlit as st
 import requests
 import json
+import pandas as pd
 from typing import Dict, List, Optional
 
-from analysis import analyze_forks
-from typing import Dict
+from fork_tree import build_fork_tree
 from visualizations import (
     create_fork_composition_treemap,
     create_fork_tree_sankey,
-    create_sankey_diagram,
     create_comprehensive_fork_flow,
+    create_node_fork_table,
     format_weight
 )
 
@@ -25,11 +25,6 @@ def fetch_frame_cached(base_url: str, frame_id: str) -> Optional[Dict]:
     """Cached version of fetch_frame."""
     return fetch_frame(base_url, frame_id)
 
-@st.cache_data(ttl=3600)  # 1 hour - analysis results can be cached longer
-def analyze_forks_cached(frames: str) -> Dict:
-    """Cached version of analyze_forks that works with serializable data."""
-    frames_list = json.loads(frames)
-    return analyze_forks(frames_list)
 
 @st.cache_data(ttl=600)  # 10 minutes - metadata changes more frequently
 def fetch_metadata(base_url: str, slot: int, limit: int = 1000) -> List[Dict]:
@@ -133,27 +128,30 @@ def main():
         
         progress.empty()
         
-        # Analyze forks (using cached version)
-        frames_json = json.dumps(frames)
-        analysis = analyze_forks_cached(frames_json)
+        # Analyze forks using proper tree-based detection
+        with st.spinner("Building fork tree..."):
+            analysis = build_fork_tree(frames)
         
         # Filter out small forks
         def filter_small_forks(analysis: Dict, min_size: int) -> Dict:
             """Filter out forks with fewer than min_size nodes."""
             filtered_groups = {}
             filtered_weights = {}
+            filtered_block_info = {}
             
-            for block_root, nodes in analysis["fork_groups"].items():
+            for fork_key, nodes in analysis["fork_groups"].items():
                 if len(nodes) >= min_size:
-                    filtered_groups[block_root] = nodes
-                    filtered_weights[block_root] = analysis["fork_weights"].get(block_root, 0)
+                    filtered_groups[fork_key] = nodes
+                    filtered_weights[fork_key] = analysis["fork_weights"].get(fork_key, 0)
+                    filtered_block_info[fork_key] = analysis["block_info"].get(fork_key, {})
             
             return {
                 "fork_groups": filtered_groups,
-                "block_info": analysis["block_info"],
+                "block_info": filtered_block_info,
                 "fork_weights": filtered_weights,
                 "num_forks": len(filtered_groups),
-                "total_nodes": sum(len(nodes) for nodes in filtered_groups.values())
+                "total_nodes": sum(len(nodes) for nodes in filtered_groups.values()),
+                "divergence_point": analysis.get("divergence_point")
             }
         
         # Apply fork size filter
@@ -166,10 +164,14 @@ def main():
         # Use filtered analysis for visualizations
         analysis = filtered_analysis
         
+        # Show divergence point if found
+        if analysis.get("divergence_point") and analysis["divergence_point"]["slot"]:
+            st.info(f"🔀 **Fork divergence detected at slot {analysis['divergence_point']['slot']}** - Block: `{analysis['divergence_point']['block'][:16]}...`")
+        
         # Visualizations
         if analysis["num_forks"] > 1:
             # Add tabs for different views
-            view_tabs = st.tabs(["🔍 Comprehensive Overview", "📊 Fork Analysis", "🔀 Client Flows"])
+            view_tabs = st.tabs(["🔍 Comprehensive Overview", "📊 Fork Analysis", "📋 Node Table"])
             
             with view_tabs[0]:
                 st.markdown("### 🔍 Complete Fork Flow Overview")
@@ -177,15 +179,15 @@ def main():
                 
                 # Show split instances at the top if any
                 if split_instances:
-                    st.error(f"🚨 **Unexpected Splits Detected** - {len(split_instances)} CL/EL pair{'s' if len(split_instances) > 1 else ''} split across multiple forks")
+                    st.error(f"🚨 **{len(split_instances)} Unexpected Split{'s' if len(split_instances) > 1 else ''}**")
                     
-                    for split in split_instances:
-                        with st.expander(f"⚠️ **{split['cl']}/{split['el']}** - Split across {len(split['forks'])} forks", expanded=True):
+                    # Compact display in columns
+                    cols = st.columns(min(len(split_instances), 3))
+                    for i, split in enumerate(split_instances):
+                        with cols[i % 3]:
+                            st.markdown(f"**{split['cl']}/{split['el']}**")
                             for fork_name, fork_data in split['forks'].items():
-                                st.markdown(f"**{fork_name}** - Slot {fork_data['slot']} - Weight: {format_weight(fork_data['weight'])} ({fork_data['count']} node{'s' if fork_data['count'] > 1 else ''}):")
-                                for node_name in fork_data['nodes']:
-                                    st.markdown(f"  • `{node_name}`")
-                    st.markdown("---")
+                                st.caption(f"{fork_name}: `{', '.join(fork_data['nodes'])}`")
                 else:
                     st.success("✅ No unexpected splits detected - all CL/EL pairs are on the same fork")
                 
@@ -205,38 +207,42 @@ def main():
                     st.caption("Fork composition by CL/EL pairs. Size = node count, Color = consensus client")
             
             with view_tabs[2]:
-                # Consensus client specific flows
-                st.markdown("### 🔀 Consensus → Execution → Fork Flow")
+                # Node table view
+                st.markdown("### 📋 Node Fork Assignment Table")
                 
-                # Get all consensus clients
-                consensus_clients = set()
-                for nodes in analysis["fork_groups"].values():
-                    for node in nodes:
-                        consensus_clients.add(node["consensus_client"])
-                consensus_clients = sorted(list(consensus_clients))
+                # Create summary stats
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Nodes", analysis["total_nodes"])
+                with col2:
+                    st.metric("Total Forks", analysis["num_forks"])
+                with col3:
+                    largest_fork = max(analysis["fork_groups"].values(), key=len)
+                    st.metric("Largest Fork", f"{len(largest_fork)} nodes")
+                with col4:
+                    # Show fork distribution
+                    fork_sizes = [len(nodes) for nodes in analysis["fork_groups"].values()]
+                    st.metric("Fork Distribution", f"{'/'.join(map(str, fork_sizes))}")
                 
-                # Create tabs for each consensus client
-                if len(consensus_clients) > 1:
-                    tabs = st.tabs([f"🟢 {cl}" for cl in consensus_clients])
-                    
-                    for i, cl in enumerate(consensus_clients):
-                        with tabs[i]:
-                            fig = create_sankey_diagram(analysis, cl)
-                            if fig.data:  # Only show if there's data
-                                st.plotly_chart(fig, use_container_width=True)
-                                
-                                # Count nodes for this CL
-                                cl_nodes = sum(
-                                    len([n for n in nodes if n["consensus_client"] == cl])
-                                    for nodes in analysis["fork_groups"].values()
-                                )
-                                st.caption(f"Shows how {cl} nodes ({cl_nodes} total) pair with execution clients and distribute across forks")
-                            else:
-                                st.info(f"No data for {cl}")
-                else:
-                    # Only one consensus client, show directly
-                    st.plotly_chart(create_sankey_diagram(analysis), use_container_width=True)
-                    st.caption("Shows how nodes pair with execution clients and which forks they end up on")
+                # Get dataframe and colors
+                df, fork_colors = create_node_fork_table(analysis)
+                
+                # Display color legend
+                st.markdown("**Fork Colors:**")
+                cols = st.columns(min(len(fork_colors), 6))
+                for i, (fork_name, color) in enumerate(fork_colors.items()):
+                    if f"Fork {i+1}" in df['Fork'].values:
+                        with cols[i % 6]:
+                            st.markdown(f"<span style='background-color: {color}; color: white; padding: 2px 8px; border-radius: 4px;'>{fork_name}</span>", unsafe_allow_html=True)
+                
+                # Display the dataframe with highlighting
+                st.dataframe(
+                    df.style.apply(lambda row: [f'background-color: {fork_colors.get(row["Fork"], "#34495E")}20' for _ in row], axis=1),
+                    use_container_width=True,
+                    height=600
+                )
+                
+                st.caption("Table shows all nodes with their consensus and execution clients. Rows are colored by fork assignment.")
             
         elif analysis["num_forks"] == 1:
             st.success("✅ Network is in consensus - no forks detected!")
