@@ -1,0 +1,11 @@
+[project]
+name = "forky-analyzer"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas>=2.3.1",
+    "plotly>=6.3.0",
+    "requests>=2.32.4",
+    "streamlit>=1.48.1",
+]
